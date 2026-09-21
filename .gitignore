@@ -1,41 +1,836 @@
-# Compiled Lua sources
-luac.out
+--[[
+    Delta Executor - TSB Guard (Rayfield UI)
+    Features: Protection, Orbit, Dodge Attack, Auto Void, Player Protection, Face Target
+]]
 
-# luarocks build files
-*.src.rock
-*.zip
-*.tar.gz
+-- Load Rayfield UI Library
+local Rayfield = loadstring(game:HttpGet('https://raw.githubusercontent.com/shlexware/Rayfield/main/source'))()
 
-# Object files
-*.o
-*.os
-*.ko
-*.obj
-*.elf
+-- Load necessary libraries
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TeleportService = game:GetService("TeleportService")
+local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local TweenService = game:GetService("TweenService")
 
-# Precompiled Headers
-*.gch
-*.pch
+-- Configuration
+local Config = {
+    -- Protection Settings
+    AntiKick = true,
+    AntiTeleport = true,
+    AntiBan = true,
+    AntiCrash = true,
+    RejoinOnKick = true,
+    ProtectFromServerScripts = true,
+    NotificationEnabled = true,
+    
+    -- Orbit Settings
+    OrbitEnabled = true,
+    OrbitSpeed = 10,
+    OrbitDistance = 15,
+    OrbitHeight = 0,
+    AttackDirection = "Front",
+    FaceTarget = true,
+    
+    -- Combat Settings
+    AutoAttack = false,
+    AttackCooldown = 0.5,
+    TargetSelection = "Nearest",
+    
+    -- Dodge Settings
+    DodgeEnabled = true,
+    DodgeCooldown = 2,
+    DodgeDistance = 20,
+    DodgeDirection = "Random",
+    
+    -- Auto Void Settings
+    AutoVoid = true,
+    VoidCheckInterval = 0.5,
+    VoidRecoveryHeight = 50,
+    
+    -- Player Protection Settings
+    ProtectOthers = true,
+    ProtectionRadius = 50,
+    ProtectedPlayers = {},
+    BlockDamageToProtected = true,
+    TeleportProtectedToSafety = true
+}
 
-# Libraries
-*.lib
-*.a
-*.la
-*.lo
-*.def
-*.exp
+-- Create Rayfield Window
+local Window = Rayfield:CreateWindow({
+    Name = "TSB Guard",
+    LoadingTitle = "TSB Guard",
+    LoadingSubtitle = "by Delta",
+    ConfigurationSaving = {
+        Enabled = true,
+        FolderName = "DeltaScripts",
+        FileName = "TSB_Guard"
+    },
+    KeySystem = false,
+    KeySettings = {
+        Title = "TSB Guard",
+        Url = "https://example.com/key",
+        Note = "No key needed for this script"
+    }
+})
 
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
+-- Main Protection System
+local Protection = {}
+Protection.__index = Protection
 
-# Executables
-*.exe
-*.out
-*.app
-*.i*86
-*.x86_64
-*.hex
+function Protection.new()
+    local self = setmetatable({}, Protection)
+    self.Player = Players.LocalPlayer
+    self.OriginalPosition = nil
+    self.IsProtected = true
+    self.ProtectedConnections = {}
+    return self
+end
+
+function Protection:SetupAntiKick()
+    if not Config.AntiKick then return end
+    
+    local oldKick = self.Player.Kick
+    self.Player.Kick = function(...)
+        if self.IsProtected then
+            self:Notify("TSB Guard", "Kick attempt blocked!")
+            return
+        end
+        return oldKick(...)
+    end
+    
+    local oldTeleport = TeleportService.Teleport
+    TeleportService.Teleport = function(...)
+        if self.IsProtected and Config.AntiTeleport then
+            self:Notify("TSB Guard", "Teleport attempt blocked!")
+            return
+        end
+        return oldTeleport(...)
+    end
+    
+    if Config.ProtectFromServerScripts then
+        local oldFireServer = game.ReplicatedStorage.RemoteEvent.FireServer
+        game.ReplicatedStorage.RemoteEvent.FireServer = function(...)
+            local args = {...}
+            for _, arg in ipairs(args) do
+                if type(arg) == "string" and (arg:lower():find("kick") or arg:lower():find("ban")) then
+                    return
+                end
+            end
+            return oldFireServer(...)
+        end
+    end
+end
+
+function Protection:SetupAntiTeleport()
+    if not Config.AntiTeleport then return end
+    
+    self.OriginalPosition = self.Player.Character and self.Player.Character.PrimaryPart and self.Player.Character.PrimaryPart.Position
+    
+    self.ProtectedConnections[#self.ProtectedConnections+1] = RunService.Heartbeat:Connect(function()
+        if self.Player.Character and self.Player.Character.PrimaryPart then
+            local currentPos = self.Player.Character.PrimaryPart.Position
+            if self.OriginalPosition and (currentPos - self.OriginalPosition).Magnitude > 1000 then
+                self.Player.Character.PrimaryPart.CFrame = CFrame.new(self.OriginalPosition)
+                self:Notify("TSB Guard", "Teleport detected, position restored!")
+            end
+        end
+    end)
+end
+
+function Protection:SetupAntiBan()
+    if not Config.AntiBan then return end
+    
+    local oldBan = game.Players.BanAsync
+    game.Players.BanAsync = function(...)
+        if self.IsProtected then
+            self:Notify("TSB Guard", "Ban attempt blocked!")
+            return
+        end
+        return oldBan(...)
+    end
+    
+    if Config.RejoinOnKick then
+        self.Player:Kick(function()
+            if self.IsProtected then
+                task.wait(2)
+                TeleportService:Teleport(game.PlaceId, self.Player)
+            end
+        end)
+    end
+end
+
+function Protection:SetupAntiCrash()
+    if not Config.AntiCrash then return end
+    
+    local oldFireServer = game.ReplicatedStorage.RemoteEvent.FireServer
+    game.ReplicatedStorage.RemoteEvent.FireServer = function(...)
+        local args = {...}
+        for _, arg in ipairs(args) do
+            if type(arg) == "table" and #arg > 100 then
+                return
+            end
+        end
+        return oldFireServer(...)
+    end
+    
+    RunService.Heartbeat:Connect(function()
+        collectgarbage("collect")
+    end)
+end
+
+function Protection:Notify(title, message)
+    if Config.NotificationEnabled then
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = title,
+            Text = message,
+            Duration = 5
+        })
+    end
+end
+
+-- Player Protection System
+local PlayerProtection = {}
+PlayerProtection.__index = PlayerProtection
+
+function PlayerProtection.new()
+    local self = setmetatable({}, PlayerProtection)
+    self.ProtectionConnection = nil
+    self.DamageConnection = nil
+    return self
+end
+
+function PlayerProtection:Start()
+    if self.ProtectionConnection then return end
+    
+    self.ProtectionConnection = RunService.Heartbeat:Connect(function()
+        if not Config.ProtectOthers then return end
+        
+        local localPlayer = Players.LocalPlayer
+        local localChar = localPlayer.Character
+        if not localChar or not localChar.PrimaryPart then return end
+        
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= localPlayer and player.Character and player.Character.PrimaryPart then
+                local dist = (player.Character.PrimaryPart.Position - localChar.PrimaryPart.Position).Magnitude
+                
+                if dist < Config.ProtectionRadius then
+                    Config.ProtectedPlayers[player.Name] = true
+                end
+            end
+        end
+        
+        if Config.TeleportProtectedToSafety then
+            for name, isProtected in pairs(Config.ProtectedPlayers) do
+                local player = Players:FindFirstChild(name)
+                if player and player.Character and player.Character.PrimaryPart then
+                    if player.Character.PrimaryPart.Position.Y < -50 then
+                        local safePos = Vector3.new(player.Character.PrimaryPart.Position.X, Config.VoidRecoveryHeight, player.Character.PrimaryPart.Position.Z)
+                        player.Character.PrimaryPart.CFrame = CFrame.new(safePos)
+                    end
+                end
+            end
+        end
+    end)
+    
+    if Config.BlockDamageToProtected then
+        local oldDamage = game.ReplicatedStorage.RemoteEvent.FireServer
+        game.ReplicatedStorage.RemoteEvent.FireServer = function(...)
+            local args = {...}
+            for _, arg in ipairs(args) do
+                if type(arg) == "table" then
+                    for _, value in pairs(arg) do
+                        if type(value) == "string" and Config.ProtectedPlayers[value] then
+                            return
+                        end
+                    end
+                end
+            end
+            return oldDamage(...)
+        end
+    end
+end
+
+-- Orbit System
+local Orbit = {}
+Orbit.__index = Orbit
+
+function Orbit.new()
+    local self = setmetatable({}, Orbit)
+    self.Angle = 0
+    self.Target = nil
+    self.OrbitConnection = nil
+    self.LastAttack = 0
+    return self
+end
+
+function Orbit:GetTarget()
+    local closest = nil
+    local closestDist = math.huge
+    
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= Players.LocalPlayer and player.Character and player.Character:FindFirstChild("Humanoid") and player.Character.Humanoid.Health > 0 then
+            local dist = (player.Character.PrimaryPart.Position - Players.LocalPlayer.Character.PrimaryPart.Position).Magnitude
+            
+            if Config.TargetSelection == "Nearest" then
+                if dist < closestDist then
+                    closest = player
+                    closestDist = dist
+                end
+            elseif Config.TargetSelection == "LowestHP" then
+                if player.Character.Humanoid.Health < (closest and closest.Character.Humanoid.Health or math.huge) then
+                    closest = player
+                    closestDist = dist
+                end
+            elseif Config.TargetSelection == "Protected" then
+                if Config.ProtectedPlayers[player.Name] then
+                    closest = player
+                    break
+                end
+            end
+        end
+    end
+    
+    return closest
+end
+
+function Orbit:CalculatePosition(targetPosition)
+    local player = Players.LocalPlayer
+    local char = player.Character
+    local root = char and char.PrimaryPart
+    
+    if not root or not targetPosition then return nil end
+    
+    local angle = math.rad(self.Angle)
+    local x = math.cos(angle) * Config.OrbitDistance
+    local z = math.sin(angle) * Config.OrbitDistance
+    
+    local targetCFrame = CFrame.new(targetPosition)
+    local offset = Vector3.new(x, Config.OrbitHeight, z)
+    
+    local directionOffset = Vector3.new(0, 0, 0)
+    if Config.AttackDirection == "Front" then
+        directionOffset = targetCFrame.LookVector * Config.OrbitDistance
+    elseif Config.AttackDirection == "Back" then
+        directionOffset = -targetCFrame.LookVector * Config.OrbitDistance
+    elseif Config.AttackDirection == "Left" then
+        directionOffset = -targetCFrame.RightVector * Config.OrbitDistance
+    elseif Config.AttackDirection == "Right" then
+        directionOffset = targetCFrame.RightVector * Config.OrbitDistance
+    elseif Config.AttackDirection == "Top" then
+        directionOffset = Vector3.new(0, Config.OrbitDistance, 0)
+    elseif Config.AttackDirection == "Bottom" then
+        directionOffset = Vector3.new(0, -Config.OrbitDistance, 0)
+    end
+    
+    local finalPosition = targetPosition + offset + directionOffset
+    
+    local lookAt
+    if Config.FaceTarget then
+        lookAt = CFrame.lookAt(finalPosition, targetPosition)
+    else
+        lookAt = CFrame.new(finalPosition) * root.CFrame.Rotation
+    end
+    
+    return lookAt
+end
+
+function Orbit:Start()
+    if self.OrbitConnection then return end
+    
+    self.OrbitConnection = RunService.RenderStepped:Connect(function(deltaTime)
+        if not Config.OrbitEnabled then return end
+        
+        local player = Players.LocalPlayer
+        local char = player.Character
+        local root = char and char.PrimaryPart
+        
+        if not root then return end
+        
+        self.Target = self:GetTarget()
+        if not self.Target or not self.Target.Character then return end
+        
+        local targetRoot = self.Target.Character.PrimaryPart
+        if not targetRoot then return end
+        
+        self.Angle = (self.Angle + Config.OrbitSpeed * deltaTime * 10) % 360
+        
+        local newCFrame = self:CalculatePosition(targetRoot.Position)
+        if newCFrame then
+            root.CFrame = newCFrame
+        end
+        
+        if Config.AutoAttack and tick() - self.LastAttack > Config.AttackCooldown then
+            self:Attack()
+            self.LastAttack = tick()
+        end
+    end)
+end
+
+function Orbit:Attack()
+    local player = Players.LocalPlayer
+    local char = player.Character
+    
+    if not char then return end
+    
+    local combatRemote = nil
+    for _, child in ipairs(game.ReplicatedStorage:GetChildren()) do
+        if child.Name:lower():find("attack") or child.Name:lower():find("combat") or child.Name:lower():find("skill") then
+            combatRemote = child
+            break
+        end
+    end
+    
+    if combatRemote then
+        combatRemote:FireServer("BasicAttack")
+    end
+    
+    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 1)
+    task.wait(0.05)
+    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 1)
+end
+
+function Orbit:Stop()
+    if self.OrbitConnection then
+        self.OrbitConnection:Disconnect()
+        self.OrbitConnection = nil
+    end
+end
+
+-- Dodge System
+local Dodge = {}
+Dodge.__index = Dodge
+
+function Dodge.new()
+    local self = setmetatable({}, Dodge)
+    self.LastDodge = 0
+    return self
+end
+
+function Dodge:PerformDodge()
+    local player = Players.LocalPlayer
+    local char = player.Character
+    local root = char and char.PrimaryPart
+    
+    if not root or not Config.DodgeEnabled then return end
+    
+    if tick() - self.LastDodge < Config.DodgeCooldown then return end
+    
+    local dodgeDirection = Vector3.new()
+    
+    if Config.DodgeDirection == "Random" then
+        dodgeDirection = Vector3.new(math.random(-1, 1), 0, math.random(-1, 1)).Unit
+    elseif Config.DodgeDirection == "Backward" then
+        dodgeDirection = -root.CFrame.LookVector
+    elseif Config.DodgeDirection == "Forward" then
+        dodgeDirection = root.CFrame.LookVector
+    elseif Config.DodgeDirection == "Sideways" then
+        dodgeDirection = root.CFrame.RightVector * (math.random() > 0.5 and 1 or -1)
+    end
+    
+    local targetPosition = root.Position + dodgeDirection * Config.DodgeDistance
+    
+    local tween = TweenService:Create(root, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        CFrame = CFrame.new(targetPosition) * root.CFrame.Rotation
+    })
+    tween:Play()
+    
+    self.LastDodge = tick()
+end
+
+-- Auto Void System
+local AutoVoid = {}
+AutoVoid.__index = AutoVoid
+
+function AutoVoid.new()
+    local self = setmetatable({}, AutoVoid)
+    self.VoidConnection = nil
+    self.IsRecovering = false
+    return self
+end
+
+function AutoVoid:Start()
+    if self.VoidConnection then return end
+    
+    self.VoidConnection = RunService.Heartbeat:Connect(function()
+        if not Config.AutoVoid then return end
+        
+        local player = Players.LocalPlayer
+        local char = player.Character
+        local root = char and char.PrimaryPart
+        
+        if not root then return end
+        
+        if root.Position.Y < -50 and not self.IsRecovering then
+            self.IsRecovering = true
+            
+            local safePosition = Vector3.new(root.Position.X, Config.VoidRecoveryHeight, root.Position.Z)
+            root.CFrame = CFrame.new(safePosition)
+            
+            if char:FindFirstChild("Humanoid") then
+                char.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+            end
+            
+            task.wait(1)
+            self.IsRecovering = false
+        end
+    end)
+end
+
+-- Initialize Systems
+local protection = Protection.new()
+protection:SetupAntiKick()
+protection:SetupAntiTeleport()
+protection:SetupAntiBan()
+protection:SetupAntiCrash()
+
+local orbit = Orbit.new()
+orbit:Start()
+
+local dodge = Dodge.new()
+local autoVoid = AutoVoid.new()
+autoVoid:Start()
+
+local playerProtection = PlayerProtection.new()
+playerProtection:Start()
+
+-- Create UI Tabs
+local CombatTab = Window:CreateTab("Combat", 4483362458)
+local ProtectionTab = Window:CreateTab("Protection", 4483362458)
+local PlayerProtectionTab = Window:CreateTab("Player Protect", 4483362458)
+local SettingsTab = Window:CreateTab("Settings", 4483362458)
+
+-- Combat Tab Elements
+local OrbitSection = CombatTab:CreateSection("Orbit Settings")
+
+CombatTab:CreateToggle({
+    Name = "Enable Orbit",
+    CurrentValue = Config.OrbitEnabled,
+    Flag = "OrbitToggle",
+    Callback = function(Value)
+        Config.OrbitEnabled = Value
+        protection:Notify("TSB Guard", Value and "Orbit Enabled" or "Orbit Disabled")
+    end
+})
+
+CombatTab:CreateToggle({
+    Name = "Face Target",
+    CurrentValue = Config.FaceTarget,
+    Flag = "FaceTarget",
+    Callback = function(Value)
+        Config.FaceTarget = Value
+    end
+})
+
+CombatTab:CreateSlider({
+    Name = "Orbit Speed",
+    Range = {1, 50},
+    Increment = 1,
+    Suffix = "x",
+    CurrentValue = Config.OrbitSpeed,
+    Flag = "OrbitSpeed",
+    Callback = function(Value)
+        Config.OrbitSpeed = Value
+    end
+})
+
+CombatTab:CreateSlider({
+    Name = "Orbit Distance",
+    Range = {5, 50},
+    Increment = 1,
+    Suffix = "studs",
+    CurrentValue = Config.OrbitDistance,
+    Flag = "OrbitDistance",
+    Callback = function(Value)
+        Config.OrbitDistance = Value
+    end
+})
+
+CombatTab:CreateDropdown({
+    Name = "Attack Direction",
+    Options = {"Front", "Back", "Left", "Right", "Top", "Bottom"},
+    CurrentOption = Config.AttackDirection,
+    Flag = "AttackDirection",
+    Callback = function(Value)
+        Config.AttackDirection = Value
+        protection:Notify("TSB Guard", "Direction: " .. Value)
+    end
+})
+
+CombatTab:CreateToggle({
+    Name = "Auto Attack",
+    CurrentValue = Config.AutoAttack,
+    Flag = "AutoAttack",
+    Callback = function(Value)
+        Config.AutoAttack = Value
+    end
+})
+
+-- Combat Actions Section
+local ActionSection = CombatTab:CreateSection("Actions")
+
+CombatTab:CreateButton({
+    Name = "Manual Attack",
+    Callback = function()
+        orbit:Attack()
+    end
+})
+
+CombatTab:CreateButton({
+    Name = "Dodge",
+    Callback = function()
+        dodge:PerformDodge()
+    end
+})
+
+-- Dodge Settings
+local DodgeSection = CombatTab:CreateSection("Dodge Settings")
+
+CombatTab:CreateDropdown({
+    Name = "Dodge Direction",
+    Options = {"Random", "Backward", "Forward", "Sideways"},
+    CurrentOption = Config.DodgeDirection,
+    Flag = "DodgeDirection",
+    Callback = function(Value)
+        Config.DodgeDirection = Value
+    end
+})
+
+CombatTab:CreateSlider({
+    Name = "Dodge Cooldown",
+    Range = {1, 5},
+    Increment = 0.5,
+    Suffix = "s",
+    CurrentValue = Config.DodgeCooldown,
+    Flag = "DodgeCooldown",
+    Callback = function(Value)
+        Config.DodgeCooldown = Value
+    end
+})
+
+-- Auto Void Section
+local VoidSection = CombatTab:CreateSection("Auto Void")
+
+CombatTab:CreateToggle({
+    Name = "Enable Auto Void",
+    CurrentValue = Config.AutoVoid,
+    Flag = "AutoVoid",
+    Callback = function(Value)
+        Config.AutoVoid = Value
+        protection:Notify("TSB Guard", Value and "Auto Void Enabled" or "Auto Void Disabled")
+    end
+})
+
+CombatTab:CreateSlider({
+    Name = "Recovery Height",
+    Range = {10, 100},
+    Increment = 5,
+    Suffix = "studs",
+    CurrentValue = Config.VoidRecoveryHeight,
+    Flag = "VoidHeight",
+    Callback = function(Value)
+        Config.VoidRecoveryHeight = Value
+    end
+})
+
+-- Protection Tab Elements
+local AntiKickSection = ProtectionTab:CreateSection("Anti-Kick")
+
+ProtectionTab:CreateToggle({
+    Name = "Anti-Kick",
+    CurrentValue = Config.AntiKick,
+    Flag = "AntiKick",
+    Callback = function(Value)
+        Config.AntiKick = Value
+    end
+})
+
+ProtectionTab:CreateToggle({
+    Name = "Anti-Teleport",
+    CurrentValue = Config.AntiTeleport,
+    Flag = "AntiTeleport",
+    Callback = function(Value)
+        Config.AntiTeleport = Value
+    end
+})
+
+ProtectionTab:CreateToggle({
+    Name = "Anti-Ban",
+    CurrentValue = Config.AntiBan,
+    Flag = "AntiBan",
+    Callback = function(Value)
+        Config.AntiBan = Value
+    end
+})
+
+ProtectionTab:CreateToggle({
+    Name = "Anti-Crash",
+    CurrentValue = Config.AntiCrash,
+    Flag = "AntiCrash",
+    Callback = function(Value)
+        Config.AntiCrash = Value
+    end
+})
+
+ProtectionTab:CreateToggle({
+    Name = "Auto-Rejoin on Kick",
+    CurrentValue = Config.RejoinOnKick,
+    Flag = "Rejoin",
+    Callback = function(Value)
+        Config.RejoinOnKick = Value
+    end
+})
+
+-- Player Protection Tab Elements
+local PlayerProtectionSection = PlayerProtectionTab:CreateSection("Player Protection")
+
+PlayerProtectionTab:CreateToggle({
+    Name = "Enable Player Protection",
+    CurrentValue = Config.ProtectOthers,
+    Flag = "PlayerProtect",
+    Callback = function(Value)
+        Config.ProtectOthers = Value
+        protection:Notify("TSB Guard", Value and "Player Protection Enabled" or "Player Protection Disabled")
+    end
+})
+
+PlayerProtectionTab:CreateSlider({
+    Name = "Protection Radius",
+    Range = {10, 100},
+    Increment = 5,
+    Suffix = "studs",
+    CurrentValue = Config.ProtectionRadius,
+    Flag = "ProtectionRadius",
+    Callback = function(Value)
+        Config.ProtectionRadius = Value
+    end
+})
+
+PlayerProtectionTab:CreateToggle({
+    Name = "Block Damage to Protected",
+    CurrentValue = Config.BlockDamageToProtected,
+    Flag = "BlockDamage",
+    Callback = function(Value)
+        Config.BlockDamageToProtected = Value
+    end
+})
+
+PlayerProtectionTab:CreateToggle({
+    Name = "Teleport Protected to Safety",
+    CurrentValue = Config.TeleportProtectedToSafety,
+    Flag = "TeleportSafety",
+    Callback = function(Value)
+        Config.TeleportProtectedToSafety = Value
+    end
+})
+
+PlayerProtectionTab:CreateButton({
+    Name = "Clear Protected Players",
+    Callback = function()
+        Config.ProtectedPlayers = {}
+        protection:Notify("TSB Guard", "Cleared all protected players")
+    end
+})
+
+-- Settings Tab Elements
+local GeneralSection = SettingsTab:CreateSection("General Settings")
+
+SettingsTab:CreateToggle({
+    Name = "Notifications",
+    CurrentValue = Config.NotificationEnabled,
+    Flag = "Notifications",
+    Callback = function(Value)
+        Config.NotificationEnabled = Value
+    end
+})
+
+SettingsTab:CreateDropdown({
+    Name = "Target Selection",
+    Options = {"Nearest", "LowestHP", "Protected"},
+    CurrentOption = Config.TargetSelection,
+    Flag = "TargetSelection",
+    Callback = function(Value)
+        Config.TargetSelection = Value
+    end
+})
+
+-- Keybind System
+local KeybindSection = SettingsTab:CreateSection("Keybinds")
+
+SettingsTab:CreateKeybind({
+    Name = "Toggle Orbit",
+    CurrentKeybind = "O",
+    Flag = "OrbitKeybind",
+    Callback = function()
+        Config.OrbitEnabled = not Config.OrbitEnabled
+        protection:Notify("TSB Guard", Config.OrbitEnabled and "Orbit Enabled" or "Orbit Disabled")
+    end
+})
+
+SettingsTab:CreateKeybind({
+    Name = "Dodge",
+    CurrentKeybind = "Space",
+    Flag = "DodgeKeybind",
+    Callback = function()
+        dodge:PerformDodge()
+    end
+})
+
+SettingsTab:CreateKeybind({
+    Name = "Toggle Auto Void",
+    CurrentKeybind = "V",
+    Flag = "VoidKeybind",
+    Callback = function()
+        Config.AutoVoid = not Config.AutoVoid
+        protection:Notify("TSB Guard", Config.AutoVoid and "Auto Void Enabled" or "Auto Void Disabled")
+    end
+})
+
+SettingsTab:CreateKeybind({
+    Name = "Toggle Auto Attack",
+    CurrentKeybind = "A",
+    Flag = "AttackKeybind",
+    Callback = function()
+        Config.AutoAttack = not Config.AutoAttack
+        protection:Notify("TSB Guard", Config.AutoAttack and "Auto Attack Enabled" or "Auto Attack Disabled")
+    end
+})
+
+SettingsTab:CreateKeybind({
+    Name = "Change Direction",
+    CurrentKeybind = "D",
+    Flag = "DirectionKeybind",
+    Callback = function()
+        local directions = {"Front", "Back", "Left", "Right", "Top", "Bottom"}
+        local currentIndex = table.find(directions, Config.AttackDirection)
+        Config.AttackDirection = directions[(currentIndex % #directions) + 1]
+        protection:Notify("TSB Guard", "Direction: " .. Config.AttackDirection)
+    end
+})
+
+-- Cleanup on teleport
+game:GetService("Players").LocalPlayer.OnTeleport:Connect(function()
+    orbit:Stop()
+    protection:Destroy()
+end)
+
+-- Status display
+local Chat = game:GetService("Chat")
+if protection.Player.Character then
+    Chat:Chat(protection.Player.Character, "TSB Guard: ACTIVE", Enum.ChatColor.Green)
+end
+
+protection:Notify("TSB Guard", "All systems activated!")
+
+-- Return systems
+return {
+    Protection = protection,
+    Orbit = orbit,
+    Dodge = dodge,
+    AutoVoid = autoVoid,
+    PlayerProtection = playerProtection,
+    Window = Window
+}
+
 
